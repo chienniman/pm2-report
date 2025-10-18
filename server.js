@@ -94,13 +94,45 @@ app.post('/api/login', async (req, res) => {
 
 // Get PM2 process list
 app.get('/api/processes', authenticateToken, (req, res) => {
+  // 添加調試信息
+  console.log('=== PM2 Debug Info ===');
+  console.log('Current user:', process.getuid ? process.getuid() : 'N/A', process.getgid ? process.getgid() : 'N/A');
+  console.log('Working directory:', process.cwd());
+  console.log('NODE_ENV:', process.env.NODE_ENV);
+  console.log('PM2_HOME:', process.env.PM2_HOME);
+  console.log('HOME:', process.env.HOME);
+  console.log('USER:', process.env.USER);
+  console.log('PATH:', process.env.PATH);
+  
   const options = {
     timeout: 10000,
     maxBuffer: 1024 * 1024 * 2, // 2MB buffer
-    env: { ...process.env, PATH: process.env.PATH + ':/usr/local/bin:/usr/bin' }
+    env: { 
+      ...process.env, 
+      PATH: process.env.PATH + ':/usr/local/bin:/usr/bin',
+      HOME: process.env.HOME || '/home/ubuntu',
+      USER: process.env.USER || 'ubuntu'
+    }
   };
   
+  console.log('Exec options:', JSON.stringify({
+    timeout: options.timeout,
+    maxBuffer: options.maxBuffer,
+    env: {
+      PATH: options.env.PATH,
+      HOME: options.env.HOME,
+      USER: options.env.USER,
+      PM2_HOME: options.env.PM2_HOME
+    }
+  }, null, 2));
+  
   exec('pm2 jlist', options, (error, stdout, stderr) => {
+    console.log('PM2 jlist executed');
+    console.log('Error:', error?.message || 'None');
+    console.log('Stderr:', stderr || 'None');
+    console.log('Stdout length:', stdout?.length || 0);
+    console.log('Stdout preview:', stdout?.substring(0, 100) || 'Empty');
+    
     if (error) {
       console.error('PM2 jlist error:', error.message);
       console.error('Stderr:', stderr);
@@ -368,10 +400,12 @@ app.get('/api/status', authenticateToken, (req, res) => {
   });
 });
 
-// 新增：測試 PM2 連接
+// 新增：測試 PM2 連接和調試
 app.get('/api/pm2/test', authenticateToken, (req, res) => {
   const commands = [
+    'which pm2',
     'pm2 --version',
+    'pm2 ping',
     'pm2 list',
     'pm2 jlist'
   ];
