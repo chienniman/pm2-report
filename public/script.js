@@ -143,13 +143,53 @@ class PM2Dashboard {
 
     async loadProcesses() {
         try {
-            const processes = await this.apiRequest('/api/processes');
+            const result = await this.apiRequest('/api/processes');
+            
+            // 檢查是否是特殊的錯誤回應
+            if (result.error && result.rawOutput) {
+                console.log('PM2 raw output:', result.rawOutput);
+                this.showToast(`PM2 連接問題: ${result.error}`, 'error');
+                
+                // 嘗試解析原始輸出
+                this.updateProcessStats([]);
+                this.updateProcessTable([]);
+                this.updateProcessSelect([]);
+                
+                // 顯示原始輸出給用戶參考
+                document.getElementById('processTable').innerHTML = `
+                    <div style="padding: 1rem; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px;">
+                        <h4 style="color: #856404; margin-bottom: 0.5rem;">PM2 連接狀態</h4>
+                        <p style="color: #856404; margin-bottom: 1rem;">${result.suggestion || result.error}</p>
+                        <details>
+                            <summary style="cursor: pointer; color: #856404;">查看原始輸出</summary>
+                            <pre style="background: #f8f9fa; padding: 0.5rem; margin-top: 0.5rem; border-radius: 4px; font-size: 0.8rem; overflow-x: auto;">${result.rawOutput}</pre>
+                        </details>
+                    </div>
+                `;
+                return;
+            }
+            
+            // 正常處理
+            const processes = Array.isArray(result) ? result : [];
             this.updateProcessStats(processes);
             this.updateProcessTable(processes);
             this.updateProcessSelect(processes);
+            
         } catch (error) {
             console.error('Failed to load processes:', error);
             this.showToast(`載入進程失敗: ${error.message}`, 'error');
+            
+            // 顯示調試選項
+            document.getElementById('processTable').innerHTML = `
+                <div style="text-align: center; padding: 2rem; color: #dc3545;">
+                    <i class="fas fa-exclamation-triangle" style="font-size: 2rem; margin-bottom: 1rem;"></i>
+                    <h3>無法載入 PM2 進程</h3>
+                    <p>錯誤: ${error.message}</p>
+                    <button onclick="window.pm2Dashboard.testPM2Connection()" style="background: #dc3545; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; cursor: pointer; margin-top: 1rem;">
+                        <i class="fas fa-wrench"></i> 診斷問題
+                    </button>
+                </div>
+            `;
         }
     }
 

@@ -94,16 +94,56 @@ app.post('/api/login', async (req, res) => {
 
 // Get PM2 process list
 app.get('/api/processes', authenticateToken, (req, res) => {
-  exec('pm2 jlist', (error, stdout, stderr) => {
+  const options = {
+    timeout: 10000,
+    maxBuffer: 1024 * 1024 * 2, // 2MB buffer
+    env: { ...process.env, PATH: process.env.PATH + ':/usr/local/bin:/usr/bin' }
+  };
+  
+  exec('pm2 jlist', options, (error, stdout, stderr) => {
     if (error) {
-      return res.status(500).json({ error: 'Failed to get PM2 processes', details: error.message });
+      console.error('PM2 jlist error:', error.message);
+      console.error('Stderr:', stderr);
+      
+      // 嘗試備用命令
+      exec('pm2 list', options, (listError, listStdout, listStderr) => {
+        if (listError) {
+          return res.status(500).json({ 
+            error: 'Failed to get PM2 processes', 
+            details: error.message,
+            stderr: stderr,
+            fallbackError: listError.message 
+          });
+        }
+        
+        // 如果 pm2 list 成功，嘗試解析或返回原始輸出
+        res.json({ 
+          error: 'PM2 jlist failed, but pm2 list works',
+          rawOutput: listStdout,
+          processes: [],
+          suggestion: 'PM2 is running but jlist command failed'
+        });
+      });
+      return;
     }
+    
+    console.log('PM2 jlist stdout:', stdout.substring(0, 200) + '...');
     
     try {
       const processes = JSON.parse(stdout);
+      console.log(`Successfully parsed ${processes.length} PM2 processes`);
       res.json(processes);
     } catch (parseError) {
-      res.status(500).json({ error: 'Failed to parse PM2 output', details: parseError.message });
+      console.error('JSON parse error:', parseError.message);
+      console.error('Raw stdout:', stdout);
+      
+      // 如果 JSON 解析失敗，但有輸出，可能是格式問題
+      res.status(500).json({ 
+        error: 'Failed to parse PM2 output', 
+        details: parseError.message,
+        rawOutput: stdout.substring(0, 500),
+        suggestion: 'PM2 output is not valid JSON'
+      });
     }
   });
 });
