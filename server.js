@@ -15,9 +15,13 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
 // 配置常數
 const config = {
+  pm2: {
+    binary: '/usr/bin/pm2',
+    timeout: 10000
+  },
   server: {
-    PORT,
-    JWT_SECRET
+    port: PORT,
+    jwtSecret: JWT_SECRET
   },
   environment: {
     PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin',
@@ -26,14 +30,10 @@ const config = {
     PM2_HOME: '/home/ubuntu/.pm2'
   },
   validation: {
-    MAX_LINES: 1000,
-    MIN_LINES: 1,
-    DEFAULT_LINES: 100,
-    PROCESS_ID_PATTERN: /^[0-9a-zA-Z\-_]+$/
-  },
-  timeouts: {
-    PM2_COMMAND: 10000,
-    ARCHIVE_TIMEOUT: 5000
+    maxProcessIdLength: 50,
+    maxLines: 1000,
+    minLines: 1,
+    defaultLines: 100
   }
 };
 
@@ -220,7 +220,7 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: 'Access token required' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, config.server.jwtSecret, (err, user) => {
     if (err) {
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
@@ -242,7 +242,7 @@ app.post('/api/login', async (req, res) => {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  const token = jwt.sign({ username: user.username }, JWT_SECRET, { expiresIn: '24h' });
+  const token = jwt.sign({ username: user.username }, config.server.jwtSecret, { expiresIn: '24h' });
   res.json({ token, username: user.username });
 });
 
@@ -524,20 +524,20 @@ async function startServer() {
     // Check if HTTPS certificates exist
     const useHTTPS = fs.existsSync('./ssl/cert.pem') && fs.existsSync('./ssl/key.pem');
     
-    if (useHTTPS && PORT === 443) {
+    if (useHTTPS && config.server.port === 443) {
       const httpsOptions = {
         key: fs.readFileSync('./ssl/key.pem'),
         cert: fs.readFileSync('./ssl/cert.pem')
       };
       
-      https.createServer(httpsOptions, app).listen(PORT, () => {
-        console.log(`PM2 Report Server running on https://localhost:${PORT}`);
+      https.createServer(httpsOptions, app).listen(config.server.port, () => {
+        console.log(`PM2 Report Server running on https://localhost:${config.server.port}`);
         printAdminCredentials();
       });
     } else {
-      app.listen(PORT, () => {
+      app.listen(config.server.port, () => {
         const protocol = 'http';
-        const portDisplay = PORT === 80 ? '' : `:${PORT}`;
+        const portDisplay = config.server.port === 80 ? '' : `:${config.server.port}`;
         console.log(`PM2 Report Server running on ${protocol}://localhost${portDisplay}`);
         printAdminCredentials();
       });
