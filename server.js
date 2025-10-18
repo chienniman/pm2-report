@@ -4,7 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { exec } = require('child_process');
+const { exec, spawn } = require('node:child_process');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
@@ -12,6 +12,64 @@ const https = require('https');
 const app = express();
 const PORT = process.env.PORT || 80;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
+
+// 安全的 PM2 命令執行函數
+function executePM2Command(args, options = {}) {
+    return new Promise((resolve, reject) => {
+        const pm2Binary = '/usr/bin/pm2';
+        const env = {
+            ...process.env,
+            PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin',
+            HOME: '/home/ubuntu',
+            USER: 'ubuntu',
+            PM2_HOME: '/home/ubuntu/.pm2'
+        };
+        
+        console.log(`Executing PM2 command: ${pm2Binary}`, args);
+        
+        const child = spawn(pm2Binary, args, {
+            env,
+            cwd: '/home/ubuntu',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 10000,
+            ...options
+        });
+        
+        let stdout = '';
+        let stderr = '';
+        
+        child.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
+        
+        child.stderr.on('data', (data) => {
+            stderr += data.toString();
+        });
+        
+        child.on('close', (code) => {
+            console.log(`PM2 command finished with code: ${code}`);
+            if (stdout) console.log('STDOUT:', stdout.substring(0, 500));
+            if (stderr) console.log('STDERR:', stderr.substring(0, 500));
+            
+            if (code === 0) {
+                resolve({ stdout, stderr });
+            } else {
+                reject(new Error(`PM2 command failed with code ${code}: ${stderr}`));
+            }
+        });
+        
+        child.on('error', (error) => {
+            console.error('PM2 command error:', error);
+            reject(error);
+        });
+        
+        // 設置超時
+        setTimeout(() => {
+            child.kill('SIGKILL');
+            reject(new Error('PM2 command timeout'));
+        }, options.timeout || 10000);
+    });
+}
 
 // Initialize users from environment variables
 async function initializeUsers() {
@@ -93,176 +151,102 @@ app.post('/api/login', async (req, res) => {
 });
 
 // Get PM2 process list
-app.get('/api/processes', authenticateToken, (req, res) => {
-  // 添加調試信息
-  console.log('=== PM2 Debug Info ===');
-  console.log('Current user:', process.getuid ? process.getuid() : 'N/A', process.getgid ? process.getgid() : 'N/A');
-  console.log('Working directory:', process.cwd());
-  console.log('NODE_ENV:', process.env.NODE_ENV);
-  console.log('PM2_HOME:', process.env.PM2_HOME);
-  console.log('HOME:', process.env.HOME);
-  console.log('USER:', process.env.USER);
-  console.log('PATH:', process.env.PATH);
-  
-  const options = {
-    timeout: 10000,
-    maxBuffer: 1024 * 1024 * 2, // 2MB buffer
-    cwd: '/home/ubuntu',
-    env: { 
-      ...process.env, 
-      PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin',
-      HOME: '/home/ubuntu',
-      USER: 'ubuntu',
-      PM2_HOME: '/home/ubuntu/.pm2'
-    }
-  };
-  
-  console.log('Exec options:', JSON.stringify({
-    timeout: options.timeout,
-    maxBuffer: options.maxBuffer,
-    env: {
-      PATH: options.env.PATH,
-      HOME: options.env.HOME,
-      USER: options.env.USER,
-      PM2_HOME: options.env.PM2_HOME
-    }
-  }, null, 2));
-  
-  exec('/usr/bin/pm2 jlist', options, (error, stdout, stderr) => {
-    console.log('PM2 jlist executed');
-    console.log('Error:', error?.message || 'None');
-    console.log('Stderr:', stderr || 'None');
-    console.log('Stdout length:', stdout?.length || 0);
-    console.log('Stdout preview:', stdout?.substring(0, 100) || 'Empty');
+app.get('/api/processes', authenticateToken, async (req, res) => {
+  try {
+    console.log('=== Getting PM2 Process List ===');
     
-    if (error) {
-      console.error('PM2 jlist error:', error.message);
-      console.error('Stderr:', stderr);
-      
-      // 嘗試直接讀取 PM2 檔案
-      const fs = require('fs');
-      try {
-        const pm2ProcessesFile = '/home/ubuntu/.pm2/dump.pm2';
-        const pm2StatusFile = '/home/ubuntu/.pm2/pids/pm2.pid';
-        
-        console.log('Trying to read PM2 files directly...');
-        
-        if (fs.existsSync(pm2ProcessesFile)) {
-          const processData = fs.readFileSync(pm2ProcessesFile, 'utf8');
-          console.log('Found PM2 dump file:', processData.substring(0, 200));
-          return res.json(JSON.parse(processData));
-        }
-        
-        // 如果沒有 dump 檔，嘗試備用命令
-        exec('/usr/bin/pm2 list --json', options, (listError, listStdout, listStderr) => {
-          if (listError) {
-            return res.status(500).json({ 
-              error: 'Failed to get PM2 processes', 
-              details: error.message,
-              stderr: stderr,
-              fallbackError: listError.message 
-            });
-          }
-          
-          // 如果 pm2 list 成功，嘗試解析或返回原始輸出
-          res.json({ 
-            error: 'PM2 jlist failed, but pm2 list works',
-            rawOutput: listStdout,
-            processes: [],
-            suggestion: 'PM2 is running but jlist command failed'
-          });
-        });
-      } catch (fileError) {
-        console.error('Failed to read PM2 files:', fileError.message);
-        exec('/usr/bin/pm2 list', options, (listError, listStdout, listStderr) => {
-          if (listError) {
-            return res.status(500).json({ 
-              error: 'Failed to get PM2 processes', 
-              details: error.message,
-              stderr: stderr,
-              fallbackError: listError.message 
-            });
-          }
-          
-          res.json({ 
-            error: 'PM2 jlist failed, but pm2 list works',
-            rawOutput: listStdout,
-            processes: [],
-            suggestion: 'PM2 is running but jlist command failed'
-          });
-        });
-      }
-      return;
+    // 首先嘗試使用 jlist 命令
+    const result = await executePM2Command(['jlist']);
+    
+    if (!result.stdout || result.stdout.trim() === '') {
+      console.log('Empty jlist output, trying list --json');
+      const listResult = await executePM2Command(['list', '--json']);
+      const processes = JSON.parse(listResult.stdout);
+      return res.json(processes);
     }
     
-    console.log('PM2 jlist stdout:', stdout.substring(0, 200) + '...');
+    const processes = JSON.parse(result.stdout);
+    console.log(`Successfully parsed ${processes.length} PM2 processes`);
+    res.json(processes);
+  } catch (error) {
+    console.error('PM2 processes error:', error.message);
     
+    // 嘗試直接讀取 PM2 檔案作為後備方案
     try {
-      const processes = JSON.parse(stdout);
-      console.log(`Successfully parsed ${processes.length} PM2 processes`);
-      res.json(processes);
-    } catch (parseError) {
-      console.error('JSON parse error:', parseError.message);
-      console.error('Raw stdout:', stdout);
-      
-      // 如果 JSON 解析失敗，但有輸出，可能是格式問題
-      res.status(500).json({ 
-        error: 'Failed to parse PM2 output', 
-        details: parseError.message,
-        rawOutput: stdout.substring(0, 500),
-        suggestion: 'PM2 output is not valid JSON'
-      });
+      const pm2ProcessesFile = '/home/ubuntu/.pm2/dump.pm2';
+      if (fs.existsSync(pm2ProcessesFile)) {
+        const processData = fs.readFileSync(pm2ProcessesFile, 'utf8');
+        console.log('Using PM2 dump file as fallback');
+        return res.json(JSON.parse(processData));
+      }
+    } catch (fsError) {
+      console.error('Fallback file read error:', fsError.message);
     }
-  });
+    
+    res.status(500).json({ 
+      error: 'Failed to get PM2 processes', 
+      details: error.message 
+    });
+  }
 });
 
 // Get logs for a specific process
-app.get('/api/logs/:processId', authenticateToken, (req, res) => {
+app.get('/api/logs/:processId', authenticateToken, async (req, res) => {
   const { processId } = req.params;
   const lines = req.query.lines || 100;
   
-  // 使用 --raw 而非 --nostream，並設定超時
-  const command = `pm2 logs ${processId} --lines ${lines} --raw`;
-  const options = {
-    timeout: 10000, // 10 秒超時
-    maxBuffer: 1024 * 1024 * 5 // 5MB buffer
-  };
+  // 輸入驗證和消毒
+  const sanitizedProcessId = String(processId).replace(/[^0-9a-zA-Z\-_]/g, '');
+  const sanitizedLines = Math.min(Math.max(parseInt(lines) || 100, 1), 1000);
   
-  exec(command, options, (error, stdout, stderr) => {
-    if (error) {
-      console.error(`PM2 logs error for process ${processId}:`, error.message);
-      // 嘗試備用方法：直接讀取日誌檔案
-      const fallbackCommand = `pm2 show ${processId} --json`;
-      exec(fallbackCommand, (fallbackError, fallbackStdout) => {
-        if (fallbackError) {
-          return res.status(500).json({ 
-            error: 'Failed to get logs', 
-            details: error.message,
-            fallbackError: fallbackError.message 
-          });
-        }
-        
-        try {
-          const processInfo = JSON.parse(fallbackStdout);
-          const logPath = processInfo[0]?.pm2_env?.pm_out_log_path;
-          if (logPath) {
-            exec(`tail -n ${lines} "${logPath}"`, (tailError, tailStdout) => {
-              if (tailError) {
-                return res.status(500).json({ error: 'Failed to read log file', details: tailError.message });
-              }
-              res.json({ logs: tailStdout, processId, source: 'file' });
-            });
-          } else {
-            res.json({ logs: 'No log file found', processId });
-          }
-        } catch (parseError) {
-          res.status(500).json({ error: 'Failed to parse process info', details: parseError.message });
-        }
+  if (!sanitizedProcessId || sanitizedProcessId !== processId) {
+    return res.status(400).json({ error: 'Invalid process ID format' });
+  }
+  
+  try {
+    console.log(`Getting logs for process: ${sanitizedProcessId}, lines: ${sanitizedLines}`);
+    
+    // 使用安全的 spawn 方式執行 PM2 logs 命令
+    const result = await executePM2Command(['logs', sanitizedProcessId, '--lines', sanitizedLines.toString()]);
+    
+    if (result.stdout) {
+      return res.json({ 
+        logs: result.stdout, 
+        processId: sanitizedProcessId,
+        source: 'pm2-logs'
       });
-    } else {
-      res.json({ logs: stdout || stderr || 'No logs available', processId });
     }
-  });
+    
+    // 如果沒有輸出，嘗試獲取進程資訊並直接讀取日誌檔案
+    const showResult = await executePM2Command(['show', sanitizedProcessId, '--json']);
+    const processInfo = JSON.parse(showResult.stdout);
+    
+    if (processInfo.length > 0) {
+      const logPath = processInfo[0]?.pm2_env?.pm_out_log_path;
+      if (logPath && fs.existsSync(logPath)) {
+        const logContent = fs.readFileSync(logPath, 'utf8');
+        const logLines = logContent.split('\n').slice(-sanitizedLines).join('\n');
+        return res.json({ 
+          logs: logLines, 
+          processId: sanitizedProcessId,
+          source: 'log-file'
+        });
+      }
+    }
+    
+    res.json({ 
+      logs: 'No logs available', 
+      processId: sanitizedProcessId,
+      source: 'none'
+    });
+  } catch (error) {
+    console.error(`PM2 logs error for process ${sanitizedProcessId}:`, error.message);
+    res.status(500).json({ 
+      error: 'Failed to get logs', 
+      details: error.message,
+      processId: sanitizedProcessId
+    });
+  }
 });
 
 // Get all logs
@@ -273,26 +257,34 @@ app.get('/api/logs', authenticateToken, (req, res) => {
   const tryGetLogs = async () => {
     const options = {
       timeout: 15000, // 15 秒超時
-      maxBuffer: 1024 * 1024 * 10 // 10MB buffer
+      maxBuffer: 1024 * 1024 * 10, // 10MB buffer
+      cwd: '/home/ubuntu',
+      env: { 
+        ...process.env, 
+        PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin',
+        HOME: '/home/ubuntu',
+        USER: 'ubuntu',
+        PM2_HOME: '/home/ubuntu/.pm2'
+      }
     };
 
     // 方法 1: 嘗試使用 --raw 參數
     return new Promise((resolve) => {
-      exec(`pm2 logs --lines ${lines} --raw`, options, (error, stdout, stderr) => {
+      exec(`/usr/bin/pm2 logs --lines ${lines} --raw`, options, (error, stdout, stderr) => {
         if (!error && stdout) {
           resolve({ success: true, logs: stdout, method: 'raw' });
           return;
         }
         
         // 方法 2: 不使用 --raw 參數
-        exec(`pm2 logs --lines ${lines}`, options, (error2, stdout2, stderr2) => {
+        exec(`/usr/bin/pm2 logs --lines ${lines}`, options, (error2, stdout2, stderr2) => {
           if (!error2 && (stdout2 || stderr2)) {
             resolve({ success: true, logs: stdout2 || stderr2, method: 'standard' });
             return;
           }
           
           // 方法 3: 使用 pm2 jlist 獲取進程信息，然後讀取各個日誌檔案
-          exec('pm2 jlist', options, (error3, stdout3) => {
+          exec('/usr/bin/pm2 jlist', options, (error3, stdout3) => {
             if (error3) {
               resolve({ success: false, error: 'All methods failed', details: [error?.message, error2?.message, error3?.message] });
               return;
