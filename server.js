@@ -8,10 +8,34 @@ const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
 const https = require('node:https');
-const config = require('./config');
 
 const app = express();
-const { PORT, JWT_SECRET } = config.server;
+const PORT = process.env.PORT || 80;
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
+
+// 配置常數
+const config = {
+  server: {
+    PORT,
+    JWT_SECRET
+  },
+  environment: {
+    PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin',
+    HOME: '/home/ubuntu',
+    USER: 'ubuntu',
+    PM2_HOME: '/home/ubuntu/.pm2'
+  },
+  validation: {
+    MAX_LINES: 1000,
+    MIN_LINES: 1,
+    DEFAULT_LINES: 100,
+    PROCESS_ID_PATTERN: /^[0-9a-zA-Z\-_]+$/
+  },
+  timeouts: {
+    PM2_COMMAND: 10000,
+    ARCHIVE_TIMEOUT: 5000
+  }
+};
 
 // 安全的 PM2 命令執行函數
 function executePM2Command(args, options = {}) {
