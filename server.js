@@ -302,49 +302,72 @@ app.get('/api/logs/:processId', authenticateToken, async (req, res) => {
   try {
     console.log(`Getting logs for process: ${sanitizedProcessId}, lines: ${sanitizedLines}`);
 
-    // 首選：使用 `pm2 show --json` 取得真實 log 檔案路徑，避免使用會持續串流的 `pm2 logs`
-    let logPath = null;
-    try {
-      const showResult = await executePM2Command(['show', sanitizedProcessId, '--json']);
-      const parsed = JSON.parse(showResult.stdout || 'null');
-      const info = Array.isArray(parsed) ? parsed[0] : parsed;
-      logPath = info?.pm2_env?.pm_out_log_path || null;
-    } catch (showErr) {
-      // show 可能會失敗（例如使用 name 時），我們會後備到 jlist
-      console.log('pm2 show failed, will try jlist lookup:', showErr.message);
+    // 直接使用 jlist 查詢並比對 pm_id 或 name（相容性最好）
+    const jlistResult = await executePM2Command(['jlist']);
+    const processes = JSON.parse(jlistResult.stdout || '[]');
+    
+    let targetProcess = null;
+    for (const p of processes) {
+      // pm_id 可能為數字或字串，name 也要比對
+      if (String(p.pm_id) === String(sanitizedProcessId) || String(p.name) === String(sanitizedProcessId)) {
+        targetProcess = p;
+        break;
+      }
     }
 
-    // 後備：如果 show 沒得到路徑，使用 jlist 查詢並比對 pm_id 或 name
-    if (!logPath) {
+    if (!targetProcess) {
+      return res.status(404).json({ 
+        logs: null, 
+        processId: sanitizedProcessId, 
+        source: 'none', 
+        message: `Process '${sanitizedProcessId}' not found in PM2 list`,
+        availableProcesses: processes.map(p => ({ id: p.pm_id, name: p.name }))
+      });
+    }
+
+    // 取得 log 檔案路徑（輸出和錯誤檔）
+    const outLogPath = targetProcess.pm2_env?.pm_out_log_path;
+    const errLogPath = targetProcess.pm2_env?.pm_err_log_path;
+    
+    let combinedLogs = '';
+    
+    // 讀取輸出日誌
+    if (outLogPath && fs.existsSync(outLogPath)) {
       try {
-        const jlistResult = await executePM2Command(['jlist']);
-        const processes = JSON.parse(jlistResult.stdout || '[]');
-        for (const p of processes) {
-          // pm_id 可能為數字或字串
-          if (String(p.pm_id) === String(sanitizedProcessId) || String(p.name) === String(sanitizedProcessId)) {
-            logPath = p.pm2_env?.pm_out_log_path || null;
-            break;
-          }
+        const outContent = fs.readFileSync(outLogPath, 'utf8');
+        const outLines = outContent.split('\n').slice(-Math.floor(sanitizedLines / 2)).join('\n');
+        if (outLines.trim()) {
+          combinedLogs += `=== OUTPUT LOG ===\n${outLines}\n`;
         }
-      } catch (jErr) {
-        console.log('pm2 jlist failed during fallback lookup:', jErr.message);
-      }
-    }
-
-    // 如果找到 logPath，直接讀檔回傳最後幾行（fast and safe）
-    if (logPath && fs.existsSync(logPath)) {
-      try {
-        const logContent = fs.readFileSync(logPath, 'utf8');
-        const tail = logContent.split('\n').slice(-sanitizedLines).join('\n');
-        return res.json({ logs: tail, processId: sanitizedProcessId, source: 'log-file', path: logPath });
       } catch (readErr) {
-        console.error('Failed reading log file:', readErr.message);
-        return res.status(500).json(createErrorResponse('Failed to read log file', readErr.message).response);
+        combinedLogs += `=== OUTPUT LOG ===\nError reading: ${readErr.message}\n`;
       }
     }
+    
+    // 讀取錯誤日誌（如果與輸出日誌不同）
+    if (errLogPath && errLogPath !== outLogPath && fs.existsSync(errLogPath)) {
+      try {
+        const errContent = fs.readFileSync(errLogPath, 'utf8');
+        const errLines = errContent.split('\n').slice(-Math.floor(sanitizedLines / 2)).join('\n');
+        if (errLines.trim()) {
+          combinedLogs += `=== ERROR LOG ===\n${errLines}`;
+        }
+      } catch (readErr) {
+        combinedLogs += `=== ERROR LOG ===\nError reading: ${readErr.message}`;
+      }
+    }
+    
+    if (!combinedLogs.trim()) {
+      combinedLogs = 'No log content available';
+    }
 
-    // 最後的後備：如果沒有 log 檔可讀，回傳清楚的訊息（但不要啟用 long-running pm2 logs）
-    return res.status(404).json({ logs: null, processId: sanitizedProcessId, source: 'none', message: 'Log file not found for process' });
+    return res.json({ 
+      logs: combinedLogs, 
+      processId: sanitizedProcessId, 
+      processName: targetProcess.name,
+      source: 'log-files',
+      logPaths: { out: outLogPath, err: errLogPath }
+    });
   } catch (error) {
     console.error(`PM2 logs error for process ${sanitizedProcessId}:`, error?.message || error);
     return res.status(500).json(createErrorResponse('Failed to get logs', error?.message || String(error)).response);
