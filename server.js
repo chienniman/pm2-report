@@ -113,12 +113,47 @@ app.get('/api/logs/:processId', authenticateToken, (req, res) => {
   const { processId } = req.params;
   const lines = req.query.lines || 100;
   
-  exec(`pm2 logs ${processId} --lines ${lines} --nostream`, (error, stdout, stderr) => {
+  // 使用 --raw 而非 --nostream，並設定超時
+  const command = `pm2 logs ${processId} --lines ${lines} --raw`;
+  const options = {
+    timeout: 10000, // 10 秒超時
+    maxBuffer: 1024 * 1024 * 5 // 5MB buffer
+  };
+  
+  exec(command, options, (error, stdout, stderr) => {
     if (error) {
-      return res.status(500).json({ error: 'Failed to get logs', details: error.message });
+      console.error(`PM2 logs error for process ${processId}:`, error.message);
+      // 嘗試備用方法：直接讀取日誌檔案
+      const fallbackCommand = `pm2 show ${processId} --json`;
+      exec(fallbackCommand, (fallbackError, fallbackStdout) => {
+        if (fallbackError) {
+          return res.status(500).json({ 
+            error: 'Failed to get logs', 
+            details: error.message,
+            fallbackError: fallbackError.message 
+          });
+        }
+        
+        try {
+          const processInfo = JSON.parse(fallbackStdout);
+          const logPath = processInfo[0]?.pm2_env?.pm_out_log_path;
+          if (logPath) {
+            exec(`tail -n ${lines} "${logPath}"`, (tailError, tailStdout) => {
+              if (tailError) {
+                return res.status(500).json({ error: 'Failed to read log file', details: tailError.message });
+              }
+              res.json({ logs: tailStdout, processId, source: 'file' });
+            });
+          } else {
+            res.json({ logs: 'No log file found', processId });
+          }
+        } catch (parseError) {
+          res.status(500).json({ error: 'Failed to parse process info', details: parseError.message });
+        }
+      });
+    } else {
+      res.json({ logs: stdout || stderr || 'No logs available', processId });
     }
-    
-    res.json({ logs: stdout, processId });
   });
 });
 
@@ -126,12 +161,115 @@ app.get('/api/logs/:processId', authenticateToken, (req, res) => {
 app.get('/api/logs', authenticateToken, (req, res) => {
   const lines = req.query.lines || 100;
   
-  exec(`pm2 logs --lines ${lines} --nostream`, (error, stdout, stderr) => {
-    if (error) {
-      return res.status(500).json({ error: 'Failed to get all logs', details: error.message });
+  // 使用多種方法嘗試獲取日誌
+  const tryGetLogs = async () => {
+    const options = {
+      timeout: 15000, // 15 秒超時
+      maxBuffer: 1024 * 1024 * 10 // 10MB buffer
+    };
+
+    // 方法 1: 嘗試使用 --raw 參數
+    return new Promise((resolve) => {
+      exec(`pm2 logs --lines ${lines} --raw`, options, (error, stdout, stderr) => {
+        if (!error && stdout) {
+          resolve({ success: true, logs: stdout, method: 'raw' });
+          return;
+        }
+        
+        // 方法 2: 不使用 --raw 參數
+        exec(`pm2 logs --lines ${lines}`, options, (error2, stdout2, stderr2) => {
+          if (!error2 && (stdout2 || stderr2)) {
+            resolve({ success: true, logs: stdout2 || stderr2, method: 'standard' });
+            return;
+          }
+          
+          // 方法 3: 使用 pm2 jlist 獲取進程信息，然後讀取各個日誌檔案
+          exec('pm2 jlist', options, (error3, stdout3) => {
+            if (error3) {
+              resolve({ success: false, error: 'All methods failed', details: [error?.message, error2?.message, error3?.message] });
+              return;
+            }
+            
+            try {
+              const processes = JSON.parse(stdout3);
+              if (processes.length === 0) {
+                resolve({ success: true, logs: 'No PM2 processes running', method: 'empty' });
+                return;
+              }
+              
+              // 讀取所有進程的日誌
+              let combinedLogs = '';
+              let completed = 0;
+              
+              processes.forEach((proc) => {
+                const logPath = proc.pm2_env?.pm_out_log_path;
+                const errPath = proc.pm2_env?.pm_err_log_path;
+                
+                if (logPath) {
+                  exec(`tail -n ${Math.floor(lines/processes.length) || 20} "${logPath}" 2>/dev/null || echo "Cannot read ${logPath}"`, (tailError, tailStdout) => {
+                    if (tailStdout) {
+                      combinedLogs += `\n=== ${proc.name} (${proc.pm_id}) - OUTPUT ===\n${tailStdout}`;
+                    }
+                    
+                    if (errPath && errPath !== logPath) {
+                      exec(`tail -n ${Math.floor(lines/processes.length) || 20} "${errPath}" 2>/dev/null || echo "Cannot read ${errPath}"`, (errTailError, errTailStdout) => {
+                        if (errTailStdout) {
+                          combinedLogs += `\n=== ${proc.name} (${proc.pm_id}) - ERROR ===\n${errTailStdout}`;
+                        }
+                        
+                        completed++;
+                        if (completed === processes.length) {
+                          resolve({ success: true, logs: combinedLogs || 'No log content available', method: 'files' });
+                        }
+                      });
+                    } else {
+                      completed++;
+                      if (completed === processes.length) {
+                        resolve({ success: true, logs: combinedLogs || 'No log content available', method: 'files' });
+                      }
+                    }
+                  });
+                } else {
+                  completed++;
+                  if (completed === processes.length) {
+                    resolve({ success: true, logs: combinedLogs || 'No log files found', method: 'files' });
+                  }
+                }
+              });
+              
+              // 防止無限等待
+              setTimeout(() => {
+                if (completed < processes.length) {
+                  resolve({ success: true, logs: combinedLogs || 'Partial log data (timeout)', method: 'files-partial' });
+                }
+              }, 5000);
+              
+            } catch (parseError) {
+              resolve({ success: false, error: 'Failed to parse process list', details: parseError.message });
+            }
+          });
+        });
+      });
+    });
+  };
+  
+  tryGetLogs().then(result => {
+    if (result.success) {
+      res.json({ 
+        logs: result.logs, 
+        method: result.method,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      console.error('PM2 logs error:', result);
+      res.status(500).json({ 
+        error: result.error || 'Failed to get all logs', 
+        details: result.details 
+      });
     }
-    
-    res.json({ logs: stdout });
+  }).catch(err => {
+    console.error('Unexpected error in tryGetLogs:', err);
+    res.status(500).json({ error: 'Unexpected error', details: err.message });
   });
 });
 
@@ -166,12 +304,58 @@ app.post('/api/logs/archive', authenticateToken, (req, res) => {
 
 // Get PM2 status
 app.get('/api/status', authenticateToken, (req, res) => {
-  exec('pm2 status', (error, stdout, stderr) => {
+  exec('pm2 jlist', (error, stdout, stderr) => {
     if (error) {
       return res.status(500).json({ error: 'Failed to get PM2 status', details: error.message });
     }
     
-    res.json({ status: stdout });
+    try {
+      const processes = JSON.parse(stdout);
+      res.json({ 
+        status: 'success', 
+        processes: processes,
+        count: processes.length,
+        timestamp: new Date().toISOString()
+      });
+    } catch (parseError) {
+      // 如果 JSON 解析失敗，回傳原始輸出
+      res.json({ 
+        status: 'raw', 
+        raw_output: stdout,
+        error: parseError.message 
+      });
+    }
+  });
+});
+
+// 新增：測試 PM2 連接
+app.get('/api/pm2/test', authenticateToken, (req, res) => {
+  const commands = [
+    'pm2 --version',
+    'pm2 list',
+    'pm2 jlist'
+  ];
+  
+  const results = {};
+  let completed = 0;
+  
+  commands.forEach((cmd) => {
+    exec(cmd, { timeout: 5000 }, (error, stdout, stderr) => {
+      results[cmd] = {
+        success: !error,
+        stdout: stdout,
+        stderr: stderr,
+        error: error?.message
+      };
+      
+      completed++;
+      if (completed === commands.length) {
+        res.json({
+          pm2_test: results,
+          timestamp: new Date().toISOString()
+        });
+      }
+    });
   });
 });
 

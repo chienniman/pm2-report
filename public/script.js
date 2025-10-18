@@ -252,10 +252,65 @@ class PM2Dashboard {
                 
             const data = await this.apiRequest(url);
             
+            // 顯示調試信息（如果有的話）
+            if (data.method) {
+                console.log(`Logs loaded using method: ${data.method}`);
+            }
+            
             this.displayLogs(data.logs);
             this.updateLastUpdate();
+            
+            // 如果沒有日誌內容，顯示調試按鈕
+            if (!data.logs || data.logs.trim() === '' || data.logs === 'No logs available') {
+                this.showDebugOptions(container);
+            }
         } catch (error) {
-            container.innerHTML = `<div style="color: #f44336; text-align: center; padding: 2rem;">載入日誌失敗: ${error.message}</div>`;
+            console.error('Load logs error:', error);
+            container.innerHTML = `
+                <div style="color: #f44336; text-align: center; padding: 2rem;">
+                    載入日誌失敗: ${error.message}
+                    <br><br>
+                    <button onclick="window.pm2Dashboard.testPM2Connection()" style="background: #2196f3; color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer;">
+                        測試 PM2 連接
+                    </button>
+                </div>
+            `;
+        }
+    }
+
+    showDebugOptions(container) {
+        const debugHtml = `
+            <div style="color: #999; text-align: center; padding: 2rem;">
+                沒有找到日誌內容
+                <br><br>
+                <button onclick="window.pm2Dashboard.testPM2Connection()" style="background: #ff9800; color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; margin-right: 0.5rem;">
+                    測試 PM2 連接
+                </button>
+                <button onclick="window.pm2Dashboard.loadLogs()" style="background: #4caf50; color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer;">
+                    重新載入
+                </button>
+            </div>
+        `;
+        container.innerHTML += debugHtml;
+    }
+
+    async testPM2Connection() {
+        try {
+            const result = await this.apiRequest('/api/pm2/test');
+            console.log('PM2 Test Results:', result);
+            
+            let message = 'PM2 連接測試結果：\n\n';
+            for (const [cmd, res] of Object.entries(result.pm2_test)) {
+                message += `${cmd}: ${res.success ? '✓' : '✗'}\n`;
+                if (res.stdout) message += `  輸出: ${res.stdout.substring(0, 100)}...\n`;
+                if (res.error) message += `  錯誤: ${res.error}\n`;
+                message += '\n';
+            }
+            
+            alert(message);
+            
+        } catch (error) {
+            alert(`PM2 測試失敗: ${error.message}`);
         }
     }
 
@@ -454,5 +509,5 @@ class PM2Dashboard {
 
 // Initialize dashboard when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    new PM2Dashboard();
+    window.pm2Dashboard = new PM2Dashboard();
 });
