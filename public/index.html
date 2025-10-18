@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PM2 監控面板</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <!-- Login Modal -->
+    <div id="loginModal" class="modal">
+        <div class="modal-content">
+            <div class="login-header">
+                <i class="fas fa-server"></i>
+                <h2>PM2 監控面板</h2>
+                <p>請登入以查看系統狀態</p>
+            </div>
+            <form id="loginForm">
+                <div class="input-group">
+                    <i class="fas fa-user"></i>
+                    <input type="text" id="username" placeholder="使用者名稱" required>
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-lock"></i>
+                    <input type="password" id="password" placeholder="密碼" required>
+                </div>
+                <button type="submit" class="login-btn">
+                    <i class="fas fa-sign-in-alt"></i>
+                    登入
+                </button>
+                <div id="loginError" class="error-message"></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Main Dashboard -->
+    <div id="dashboard" class="dashboard hidden">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <i class="fas fa-server"></i>
+                <h1>PM2 監控面板</h1>
+            </div>
+            <div class="header-right">
+                <span class="user-info">
+                    <i class="fas fa-user-circle"></i>
+                    <span id="currentUser"></span>
+                </span>
+                <button id="refreshBtn" class="refresh-btn" title="重新整理">
+                    <i class="fas fa-sync-alt"></i>
+                </button>
+                <button id="logoutBtn" class="logout-btn" title="登出">
+                    <i class="fas fa-sign-out-alt"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Stats Cards -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon running">
+                        <i class="fas fa-play-circle"></i>
+                    </div>
+                    <div class="stat-info">
+                        <h3 id="runningCount">0</h3>
+                        <p>運行中</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon stopped">
+                        <i class="fas fa-stop-circle"></i>
+                    </div>
+                    <div class="stat-info">
+                        <h3 id="stoppedCount">0</h3>
+                        <p>已停止</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon errored">
+                        <i class="fas fa-exclamation-circle"></i>
+                    </div>
+                    <div class="stat-info">
+                        <h3 id="erroredCount">0</h3>
+                        <p>錯誤</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon total">
+                        <i class="fas fa-list"></i>
+                    </div>
+                    <div class="stat-info">
+                        <h3 id="totalCount">0</h3>
+                        <p>總計</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Controls -->
+            <div class="controls">
+                <div class="control-group">
+                    <label for="processSelect">選擇進程:</label>
+                    <select id="processSelect">
+                        <option value="">所有進程</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="linesSelect">顯示行數:</label>
+                    <select id="linesSelect">
+                        <option value="50">50 行</option>
+                        <option value="100" selected>100 行</option>
+                        <option value="200">200 行</option>
+                        <option value="500">500 行</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <input type="text" id="searchInput" placeholder="搜尋日誌內容...">
+                    <button id="searchBtn"><i class="fas fa-search"></i></button>
+                </div>
+                <button id="archiveLogsBtn" class="archive-btn">
+                    <i class="fas fa-archive"></i>
+                    備份並清空
+                </button>
+                <button id="flushLogsBtn" class="flush-btn">
+                    <i class="fas fa-trash-alt"></i>
+                    直接清空
+                </button>
+            </div>
+
+            <!-- Process List -->
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-list"></i> 進程列表</h3>
+                </div>
+                <div class="card-content">
+                    <div id="processTable" class="table-container">
+                        <div class="loading">
+                            <i class="fas fa-spinner fa-spin"></i>
+                            載入中...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs Display -->
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-file-alt"></i> 日誌</h3>
+                    <div class="log-header-controls">
+                        <button id="autoRefreshToggle" class="toggle-btn">
+                            <i class="fas fa-play"></i>
+                            自動重新整理
+                        </button>
+                        <span id="lastUpdate" class="last-update"></span>
+                    </div>
+                </div>
+                <div class="card-content">
+                    <div id="logsContainer" class="logs-container">
+                        <div class="loading">
+                            <i class="fas fa-spinner fa-spin"></i>
+                            載入日誌中...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="script.js"></script>
+</body>
+</html>
