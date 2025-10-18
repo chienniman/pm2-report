@@ -107,11 +107,13 @@ app.get('/api/processes', authenticateToken, (req, res) => {
   const options = {
     timeout: 10000,
     maxBuffer: 1024 * 1024 * 2, // 2MB buffer
+    cwd: '/home/ubuntu',
     env: { 
       ...process.env, 
-      PATH: process.env.PATH + ':/usr/local/bin:/usr/bin',
-      HOME: process.env.HOME || '/home/ubuntu',
-      USER: process.env.USER || 'ubuntu'
+      PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin',
+      HOME: '/home/ubuntu',
+      USER: 'ubuntu',
+      PM2_HOME: '/home/ubuntu/.pm2'
     }
   };
   
@@ -126,7 +128,7 @@ app.get('/api/processes', authenticateToken, (req, res) => {
     }
   }, null, 2));
   
-  exec('pm2 jlist', options, (error, stdout, stderr) => {
+  exec('/usr/bin/pm2 jlist', options, (error, stdout, stderr) => {
     console.log('PM2 jlist executed');
     console.log('Error:', error?.message || 'None');
     console.log('Stderr:', stderr || 'None');
@@ -137,25 +139,59 @@ app.get('/api/processes', authenticateToken, (req, res) => {
       console.error('PM2 jlist error:', error.message);
       console.error('Stderr:', stderr);
       
-      // 嘗試備用命令
-      exec('pm2 list', options, (listError, listStdout, listStderr) => {
-        if (listError) {
-          return res.status(500).json({ 
-            error: 'Failed to get PM2 processes', 
-            details: error.message,
-            stderr: stderr,
-            fallbackError: listError.message 
-          });
+      // 嘗試直接讀取 PM2 檔案
+      const fs = require('fs');
+      try {
+        const pm2ProcessesFile = '/home/ubuntu/.pm2/dump.pm2';
+        const pm2StatusFile = '/home/ubuntu/.pm2/pids/pm2.pid';
+        
+        console.log('Trying to read PM2 files directly...');
+        
+        if (fs.existsSync(pm2ProcessesFile)) {
+          const processData = fs.readFileSync(pm2ProcessesFile, 'utf8');
+          console.log('Found PM2 dump file:', processData.substring(0, 200));
+          return res.json(JSON.parse(processData));
         }
         
-        // 如果 pm2 list 成功，嘗試解析或返回原始輸出
-        res.json({ 
-          error: 'PM2 jlist failed, but pm2 list works',
-          rawOutput: listStdout,
-          processes: [],
-          suggestion: 'PM2 is running but jlist command failed'
+        // 如果沒有 dump 檔，嘗試備用命令
+        exec('/usr/bin/pm2 list --json', options, (listError, listStdout, listStderr) => {
+          if (listError) {
+            return res.status(500).json({ 
+              error: 'Failed to get PM2 processes', 
+              details: error.message,
+              stderr: stderr,
+              fallbackError: listError.message 
+            });
+          }
+          
+          // 如果 pm2 list 成功，嘗試解析或返回原始輸出
+          res.json({ 
+            error: 'PM2 jlist failed, but pm2 list works',
+            rawOutput: listStdout,
+            processes: [],
+            suggestion: 'PM2 is running but jlist command failed'
+          });
         });
-      });
+      } catch (fileError) {
+        console.error('Failed to read PM2 files:', fileError.message);
+        exec('/usr/bin/pm2 list', options, (listError, listStdout, listStderr) => {
+          if (listError) {
+            return res.status(500).json({ 
+              error: 'Failed to get PM2 processes', 
+              details: error.message,
+              stderr: stderr,
+              fallbackError: listError.message 
+            });
+          }
+          
+          res.json({ 
+            error: 'PM2 jlist failed, but pm2 list works',
+            rawOutput: listStdout,
+            processes: [],
+            suggestion: 'PM2 is running but jlist command failed'
+          });
+        });
+      }
       return;
     }
     
